@@ -1,0 +1,26 @@
+[project]
+name = "sym-trainer"
+version = "0.1.0"
+description = "ML training orchestrator for Sym — wraps ml-intern with RunPod + portal tools"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "hf-agent @ git+https://github.com/huggingface/ml-intern.git",
+    "fastmcp>=3.2.0",
+]
+
+[project.scripts]
+sym-trainer = "sym_trainer:cli"
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["sym_trainer"]
+
+[tool.setuptools.packages.find]
+include = ["mcp_server*"]
+
+[tool.uv]
+package = true
