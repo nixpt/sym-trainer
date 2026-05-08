@@ -1,5 +1,5 @@
 {
-  "model_name": "anthropic/claude-sonnet-4-20250514",
+  "model_name": "anthropic/claude-sonnet-4-6",
   "save_sessions": false,
   "session_dataset_repo": "",
   "yolo_mode": false,
