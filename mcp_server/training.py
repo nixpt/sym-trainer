@@ -80,7 +80,7 @@ def register_training_tools(mcp: FastMCP):
             )
 
         # Single-quote-escape for the tmux wrapper ('...' -> '\'' quoting).
-        tmux_payload = f"{run_cmd} 2>&1 | tee {log_file}".replace("'", "'\\''")
+        tmux_payload = f"({run_cmd}) 2>&1 | tee {log_file}".replace("'", "'\\''")
         launch_cmd = (
             f"cd {work_dir} && "
             f"tmux new-session -d -s {session_name} "
