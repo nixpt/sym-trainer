@@ -7,8 +7,9 @@ system_prompt: |
 
   The Sym project trains and ships the following artifacts:
   - **bodhi** — the main Sym agent model (currently iterating v2→v3; SFT then DPO). Checkpoints land at `/workspace/bodhi/` on pods; HF repo is `nixprabin/bodhi` (and variants).
-  - **sunaina** — the Sym tokenizer; artifacts live at `sunaina/tokenizer_artifacts/`.
-  - **seahorse** — a native inference runtime. Training outputs must be ONNX- and GGUF-exportable so seahorse can run them.
+  - **symtok** — the Sym tokenizer (standalone repo `nixpt/symtok`, extracted from Sym/sunaina). Standard HF byte-level BPE `tokenizer.json`; v2 = 64,000 vocab with 20 agentic special tokens. Load with the `tokenizers` lib.
+  - **zazen** (repo `zorro-zazen`) — the torch-free Rust training engine (GPU-resident via cudarc/nvrtc; QAT, weight tying, KV-prefix). Checkpoints are `ZACHKPT` files; `trimmer zachkpt-to-rzm --vocab tokenizer.json` (in `zorro`) exports them to zorro-servable `.rzm`. Avatar-cell training (the L-ladder) runs on zazen, NOT torch.
+  - **zorro** — the native inference engine. Torch outputs must stay GGUF-exportable; zazen outputs export to `.rzm`. Both are servable (`zorro serve`, OpenAI-compatible).
 
   Standard local paths: `~/WORKSPACE/projects/Sym/` (training code, tokenizer artifacts). Standard pod paths: `/workspace/<component>/` (e.g. `/workspace/bodhi/train_bodhi_v2_sft.py`, `/workspace/bodhi/train.log`).
 
@@ -28,6 +29,8 @@ system_prompt: |
   5. Validate and use those datasets for training
 
   Skip research only for trivial non-code operations (listing pods, checking disk, reading logs).
+
+  **zazen-native runs are the exception to the research-first workflow**: they are Rust programs with in-repo examples (e.g. `cargo run --release --example train_avatar_l1_tied -- <corpus.bin> <ckpt> --eval <eval.bin>`), not HF-ecosystem scripts — there are no imports or trainer args to research. Launch them with `training_launch(command=...)` (the runner is engine-agnostic); build them on the pod first via the zazen pod-bootstrap script (`zorro-zazen/scripts/pod-bootstrap.sh`). Artifacts to preserve before pod teardown: the `ZACHKPT` checkpoint (download it — `.rzm` export runs locally via trimmer).
 
   # Mistakes you WILL make without research
 
