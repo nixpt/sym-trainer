@@ -200,6 +200,110 @@ def register_training_tools(mcp: FastMCP):
         return output
 
     @mcp.tool()
+    def training_resume(
+        run_cmd: str,
+        ckpt_dir: str,
+        prev_final_val: float | None = None,
+        session_name: str = "train",
+        log_file: str | None = None,
+        profile: str | None = None,
+        host: str | None = None,
+        port: int = 22,
+    ) -> str:
+        """Resume a training run from the latest checkpoint, with a load-verification gate.
+
+        Why this exists: a "continuation" that silently starts from random init looks
+        exactly like a normal run for the first few hundred steps, and you only discover
+        it hours later. The tell is the FIRST eval: a genuine resume reports an `init val`
+        matching the previous run's FINAL val; a failed load reports the from-scratch
+        value (e.g. ~11.2 for a 64k-vocab LM). This tool finds the newest checkpoint,
+        injects --init-from/--step-offset, and -- when given prev_final_val -- refuses to
+        leave the run going if `init val` does not match.
+
+        Also note: a checkpoint that does NOT carry optimizer state restarts Adam's
+        moments from zero, costing a transient loss bump. Use a short --warmup to absorb it.
+
+        Args:
+            run_cmd: The training command WITHOUT --init-from/--step-offset (they are added).
+            ckpt_dir: Directory holding step_*.pt checkpoints.
+            prev_final_val: Previous run's FINAL val loss. If set, the resume is verified
+                against the first `init val` and killed on mismatch (tolerance 0.05).
+            session_name: tmux session name.
+            log_file: Log path (defaults to /workspace/<session_name>.log).
+            profile: Portal profile name.
+            host: Direct SSH host.
+            port: SSH port.
+        """
+        try:
+            conn = resolve_connection(profile, host, port)
+        except ValueError as e:
+            return str(e)
+
+        log_file = log_file or f"/workspace/{session_name}.log"
+
+        # newest checkpoint by step number, not mtime (mtime lies after a restore/rsync)
+        find_cmd = (
+            f"ls {ckpt_dir}/step_*.pt 2>/dev/null | "
+            + r"sed 's/.*step_0*//; s/\.pt//'" + " | sort -n | tail -1"
+        )
+        step_out, ok = ssh_exec(conn, find_cmd, 20)
+        step_str = step_out.strip().splitlines()[-1].strip() if step_out.strip() else ""
+        if not ok or not step_str.isdigit():
+            return (f"No step_*.pt checkpoints found in {ckpt_dir} -- nothing to resume "
+                    f"from.\n{step_out}")
+        step = int(step_str)
+        ckpt = f"{ckpt_dir}/step_{step:06d}.pt"
+
+        has_opt, _ = ssh_exec(
+            conn,
+            f"python3 -c \"import torch,sys; d=torch.load('{ckpt}',map_location='cpu',"
+            f"weights_only=False); print('OPT' if 'opt' in d else 'NOOPT')\"",
+            300,
+        )
+        opt_note = ("optimizer state present -- clean resume"
+                    if "OPT" in has_opt and "NOOPT" not in has_opt
+                    else "NO optimizer state in checkpoint: Adam moments restart from zero, "
+                         "expect a transient loss bump (use --warmup to absorb it)")
+
+        resumed_cmd = f"{run_cmd} --init-from {ckpt} --step-offset {step}"
+        launched = training_launch(
+            run_cmd=resumed_cmd, session_name=session_name, log_file=log_file,
+            profile=profile, host=host, port=port,
+        )
+        if "Failed" in launched or "already exists" in launched:
+            return launched
+
+        result = [f"Resuming from {ckpt} (step {step}).", opt_note, "", launched]
+
+        if prev_final_val is not None:
+            import time as _t
+            init_val = None
+            for _ in range(60):                       # up to ~10 min for the first eval
+                _t.sleep(10)
+                out, _ = ssh_exec(conn, f"grep -m1 'init val' {log_file} 2>/dev/null", 20)
+                if "init val" in out:
+                    try:
+                        init_val = float(out.split("init val")[1].split()[0])
+                    except (IndexError, ValueError):
+                        pass
+                    break
+            if init_val is None:
+                result.append("\nWARNING: no 'init val' line seen yet -- verify by hand "
+                              f"that it matches {prev_final_val:.4f}.")
+            elif abs(init_val - prev_final_val) > 0.05:
+                ssh_exec(conn, f"tmux kill-session -t {session_name}", 20)
+                result.append(
+                    f"\nRESUME VERIFICATION FAILED -- KILLED.\n"
+                    f"  init val {init_val:.4f} vs previous FINAL {prev_final_val:.4f}.\n"
+                    f"  The checkpoint did not load; this would have trained a randomly "
+                    f"initialised model. Check that the model class matches the saved config."
+                )
+            else:
+                result.append(f"\nRESUME VERIFIED: init val {init_val:.4f} matches previous "
+                              f"FINAL {prev_final_val:.4f}.")
+        return "\n".join(result)
+
+    @mcp.tool()
     def training_push_to_hf(
         source_path: str,
         hf_repo: str,
@@ -227,12 +331,62 @@ def register_training_tools(mcp: FastMCP):
         except ValueError as e:
             return str(e)
 
-        cmd = (
-            f"huggingface-cli upload {hf_repo} {source_path} "
-            f"--repo-type {repo_type} "
-            f"--commit-message '{commit_message}'"
-        )
-        output, success = ssh_exec(conn, cmd, 600)
-        if not success:
-            return f"[PUSH FAILED]\n{output}"
-        return f"Pushed to https://huggingface.co/{hf_repo}\n\n{output}"
+        # An upload that exits 0 is NOT a verified upload. huggingface-cli reports
+        # success on exit code alone; a truncated or partially-resumed LFS object still
+        # exits 0. Verify by reading the remote objects back and comparing each one's
+        # LFS sha256 against a locally computed sha256 on the pod. Size alone is not
+        # enough -- it will not catch a truncated-then-padded object.
+        verify_py = f"""
+import hashlib, os, subprocess, sys
+from huggingface_hub import HfApi
+src, repo, rtype = {source_path!r}, {hf_repo!r}, {repo_type!r}
+r = subprocess.run(["huggingface-cli","upload",repo,src,"--repo-type",rtype,
+                    "--commit-message",{commit_message!r}],
+                   capture_output=True, text=True)
+print(r.stdout[-2000:]); print(r.stderr[-2000:], file=sys.stderr)
+if r.returncode != 0:
+    print("PUSH_FAILED"); sys.exit(1)
+
+def sha256(p):
+    h = hashlib.sha256()
+    with open(p,"rb") as f:
+        for b in iter(lambda: f.read(8<<20), b""): h.update(b)
+    return h.hexdigest()
+
+local = {{}}
+if os.path.isdir(src):
+    for root,_,files in os.walk(src):
+        for fn in files:
+            fp = os.path.join(root,fn)
+            local[os.path.relpath(fp,src)] = fp
+else:
+    local[os.path.basename(src)] = src
+
+info = HfApi().repo_info(repo, repo_type=rtype, files_metadata=True)
+remote = {{f.rfilename: f for f in info.siblings}}
+ok = True
+for rel, fp in sorted(local.items()):
+    m = remote.get(rel)
+    if m is None:
+        print(f"[MISSING] {{rel}}"); ok = False; continue
+    size = os.path.getsize(fp)
+    line = f"{{rel}}: remote={{m.size}} local={{size}}"
+    if m.size != size:
+        line += " SIZE-MISMATCH"; ok = False
+    lfs = getattr(m, "lfs", None)
+    oid = (lfs.get("sha256") if isinstance(lfs, dict) else getattr(lfs, "sha256", None)) if lfs else None
+    if oid:
+        good = (oid == sha256(fp))
+        line += f" | sha256 {{'OK' if good else 'MISMATCH'}}"
+        ok = ok and good
+    print(line)
+print("UPLOAD_VERIFIED_MARKER" if ok else "UPLOAD_VERIFY_FAILED")
+sys.exit(0 if ok else 1)
+"""
+        import shlex
+        cmd = f"python3 -c {shlex.quote(verify_py)}"
+        output, success = ssh_exec(conn, cmd, 1800)
+        if not success or "UPLOAD_VERIFIED_MARKER" not in output:
+            return f"[PUSH FAILED OR UNVERIFIED]\n{output}"
+        return (f"Pushed AND VERIFIED (remote sha256 == local) to "
+                f"https://huggingface.co/{hf_repo}\n\n{output}")
