@@ -18,3 +18,4 @@ venv/
 *.log
 scratch/
 tmp/
+.venv/
