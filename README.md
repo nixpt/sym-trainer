@@ -5,7 +5,7 @@ ML training orchestrator for the Sym project. Wraps [ml-intern](https://github.c
 ## What it does
 
 - Reuses ml-intern's autonomous agent loop + research sub-agents (HF papers, GitHub examples, dataset inspection).
-- Replaces the default prompt with `prompts/system_prompt.yaml` — Sym project context, bodhi/sunaina/seahorse conventions, `nixprabin/*` HF repo conventions, `/workspace/...` pod paths.
+- Replaces the default prompt with `prompts/system_prompt.yaml` — the RunPod workflow, pre-flight checks, error recovery and secret-handling rules — plus your **project context** (models, repos, paths, HF conventions), which is kept in a local file and spliced in at launch (see below).
 - Adds 12 MCP tools over RunPod pods:
   - `runpod_pod_list`, `runpod_balance`, `runpod_gpu_list`, `runpod_pod_create`, `runpod_pod_action`, `runpod_ssh_info`, `runpod_pod_status`
   - `runpod_exec`, `runpod_sync`
@@ -58,7 +58,7 @@ Also ensure you have:
 sym-trainer
 
 # Headless (auto-approve, single prompt)
-sym-trainer "train bodhi v3 SFT on nixprabin/bodhi-sft-v3 with Qwen2.5-7B-Instruct base"
+sym-trainer "train my-model v3 SFT on <hf-user>/my-sft-data with Qwen2.5-7B-Instruct base"
 
 # Override model
 sym-trainer --model anthropic/claude-opus-4-6 "check pod status and training progress"
@@ -100,7 +100,8 @@ sym_trainer.py             # CLI entrypoint; patches + delegates
 configs/
   agent_config.json        # ml-intern config (MCP transport points at mcp_server.server)
 prompts/
-  system_prompt.yaml       # Sym-specific system prompt (~150 lines)
+  system_prompt.yaml       # system prompt (~190 lines); @@PROJECT_CONTEXT@@ is filled at launch
+  project_context.example.md  # format for your local project context
 mcp_server/
   server.py                # FastMCP server, registers all 12 tools
   ssh.py                   # shared SSH/portal/runpodctl layer, session memory, output truncation
@@ -111,6 +112,16 @@ mcp_server/
 tests/                     # TODO
 scripts/                   # TODO
 ```
+
+## Project context (kept local)
+
+Model names, repository names, local and pod paths, and Hugging Face naming are project-specific, so they are not in this repo. `sym_trainer.py` fills the prompt's `@@PROJECT_CONTEXT@@` placeholder at launch from the first of:
+
+1. the file named by `$SYM_TRAINER_PROJECT_CONTEXT`
+2. `prompts/project_context.local.md` (gitignored)
+3. `~/.config/sym-trainer/project_context.md`
+
+Start from `prompts/project_context.example.md`. With no context file, the agent is told to ask which models, repos, paths and HF conventions to use.
 
 ## Upstream potential
 

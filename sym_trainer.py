@@ -21,6 +21,43 @@ from pathlib import Path
 _PROJECT_ROOT = Path(__file__).resolve().parent
 
 
+# Project-specific context (model names, repos, paths, HF conventions) is kept
+# out of this public repo. It lives in a local file and is spliced into the
+# prompt's @@PROJECT_CONTEXT@@ placeholder at launch. First match wins:
+#   1. $SYM_TRAINER_PROJECT_CONTEXT
+#   2. prompts/project_context.local.md (gitignored)
+#   3. ~/.config/sym-trainer/project_context.md
+# See prompts/project_context.example.md for the format.
+_CONTEXT_PLACEHOLDER = "@@PROJECT_CONTEXT@@"
+_NO_CONTEXT = (
+    "No project context is configured. Ask the user which models, repositories, "
+    "pod paths and Hugging Face repo conventions to use before training."
+)
+
+
+def _project_context_path():
+    env = os.environ.get("SYM_TRAINER_PROJECT_CONTEXT")
+    candidates = [Path(env).expanduser()] if env else []
+    candidates += [
+        _PROJECT_ROOT / "prompts" / "project_context.local.md",
+        Path.home() / ".config" / "sym-trainer" / "project_context.md",
+    ]
+    return next((c for c in candidates if c.is_file()), None)
+
+
+def _render_prompt(template: str) -> str:
+    """Fill the project-context placeholder, indented to sit inside the YAML block."""
+    ctx_path = _project_context_path()
+    context = ctx_path.read_text().strip() if ctx_path else _NO_CONTEXT
+    lines = template.split("\n")
+    for i, line in enumerate(lines):
+        if line.strip() == _CONTEXT_PLACEHOLDER:
+            indent = line[: len(line) - len(line.lstrip())]
+            block = [indent + l if l.strip() else "" for l in context.split("\n")]
+            return "\n".join(lines[:i] + block + lines[i + 1:])
+    return template
+
+
 def _patch_ml_intern():
     """Patch ml-intern to use our config and prompt."""
     # Ensure our project root is in PYTHONPATH for the MCP server subprocess
@@ -56,7 +93,7 @@ def _patch_ml_intern():
             # Refresh the file each run so edits to our source prompt take effect
             # without needing a reinstall. Write instead of symlink — readonly
             # installs (cached wheels, sandboxed PATH) can reject symlink creation.
-            target.write_text(our_prompt.read_text())
+            target.write_text(_render_prompt(our_prompt.read_text()))
 
             # Patch ContextManager.__init__ to use our prompt
             _orig_init = cm.ContextManager.__init__

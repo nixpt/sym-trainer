@@ -18,3 +18,6 @@ venv/
 *.log
 scratch/
 tmp/
+
+# Local project context spliced into the prompt (never committed)
+prompts/project_context.local.md
