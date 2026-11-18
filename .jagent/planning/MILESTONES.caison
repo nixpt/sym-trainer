@@ -1,0 +1,67 @@
+@caison { version: "1.0" }
+# sym-trainer milestones. Written by chishiya (borderland lane) on 2026-11-18. sym-trainer has no ROADMAP, STATE or
+# ticket files; milestones are read from the README, docs/sym-runner-design.md and PRs #1, #2, #8. Ticket ids SYMT-* appear
+# only in PR titles. Training-lane overlap: tenzo's lane trains models; this repo is the RunPod orchestration wrapper.
+
+schema: "milestones/1"
+
+project: {
+  name: "sym-trainer"
+  kind: "repo"
+  lifecycle: "dormant" ~0.8 @verified { at: "2026-11-18", by: "chishiya" }
+  lifecycle_since: "2026-07-26"
+  home: "zorro"
+  ticket_prefix: "SYMT"
+  root: "a3a2227f602785f2dd02bb4d0419bbe857aba17e"
+  summary: "ml-intern wrapper with a RunPod MCP server (12 tools); SYMT-R1 engine-agnostic launch merged 2026-07-26, two PRs open (resume tool, private-context split); not registered in the workspace .mcp.json"
+  north_star: "an autonomous ML-training orchestrator for the Sym project: research sub-agents plus RunPod pod, exec, sync and training tools behind one MCP server"
+  stewards: ["arisu", "chishiya"]
+  evidence: {
+    default_branch: "main"
+  }
+}
+
+milestones: [
+  {
+    id: "S0"
+    title: "ml-intern wrapper with RunPod MCP tools"
+    status: "done" @verified { at: "2026-11-18", by: "chishiya" }
+    done_at: "2026-04-24"
+    done_when: [
+      { claim: "MCP server and training tools present", check: { kind: "file", path: "mcp_server/training.py" } },
+      { claim: "Sym system prompt present", check: { kind: "file", path: "prompts/system_prompt.yaml" } },
+    ]
+  },
+  {
+    id: "S1"
+    title: "SYMT-R1: engine-agnostic training_launch, zazen/symtok/zorro prompt refresh"
+    status: "done" @verified { at: "2026-11-18", by: "chishiya" }
+    done_at: "2026-07-26"
+    depends_on: ["S0"]
+    done_when: [
+      { claim: "SYMT-R1 merged (PR #1)", check: { kind: "merged", pr: "1" } },
+    ]
+    notes: "The tmux tee fix was found live on a pod (s405)."
+  },
+  {
+    id: "S2"
+    title: "training_resume tool and training_push_to_hf verified against remote sha256"
+    status: "next" ~0.5 @verified { at: "2026-11-18", by: "chishiya" }
+    depends_on: ["S1"]
+    done_when: [
+      { claim: "PR #2 merged", check: { kind: "merged", pr: "2" } },
+      "the server is registered in the workspace .mcp.json so an agent can reach the tools (named in PR #2 as a separate follow-up)",
+    ]
+    notes: "PR #2 is open since the phoenix-01/02 runs (foreman s460), where the resume path and push check were rebuilt ad hoc."
+  },
+  {
+    id: "S3"
+    title: "keep project-specific context out of the public prompt"
+    status: "planned" ~0.5 @verified { at: "2026-11-18", by: "chishiya" }
+    depends_on: ["S1"]
+    done_when: [
+      { claim: "PR #8 merged", check: { kind: "merged", pr: "8" } },
+    ]
+    notes: "Tidy-up, not a leak fix: the prompt named private repos and a local path; the author's full-history scan found no secrets."
+  },
+]
